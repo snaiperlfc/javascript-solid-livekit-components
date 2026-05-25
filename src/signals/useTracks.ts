@@ -59,7 +59,26 @@ export function useTracks<T extends SourcesArray = Track.Source[]>(
   ] as T,
   options: UseTracksOptions = {},
 ): Accessor<UseTracksHookReturnType<T>> {
-  const room = useEnsureRoom(options.room)
+  // STELLIS: useEnsureRoom() throws "No room provided" the moment its
+  // returned function is called against a still-undefined room. In
+  // Stoat's voice flow there's a brief tick during teardown/reconnect
+  // where the consumer (e.g. RoomAudioManager) is mounted but room is
+  // not yet wired up — that throw surfaces as an unhandled promise
+  // rejection inside Solid's effect scheduler and aborts the
+  // surrounding `await room.connect()` chain, freezing the voice card
+  // on "Подключение..." forever.
+  //
+  // Wrap the read so a missing room just produces an empty track set
+  // instead of crashing. The subscription is re-created automatically
+  // when room becomes available, since `room()` is tracked.
+  const ensureRoom = useEnsureRoom(options.room)
+  const room: Accessor<Room | undefined> = () => {
+    try {
+      return ensureRoom()
+    } catch {
+      return undefined
+    }
+  }
   const [trackReferences, setTrackReferences] = createSignal<TrackReference[]>([])
   const [participants, setParticipants] = createSignal<Participant[]>([])
 
@@ -68,7 +87,9 @@ export function useTracks<T extends SourcesArray = Track.Source[]>(
   })
 
   createEffect(() => {
-    const subscription = trackReferencesObservable(room(), sources_(), {
+    const r = room()
+    if (!r) return // wait for the room signal to populate
+    const subscription = trackReferencesObservable(r, sources_(), {
       additionalRoomEvents: options.updateOnlyOn,
       onlySubscribed: options.onlySubscribed,
     }).subscribe(({ trackReferences, participants }) => {
